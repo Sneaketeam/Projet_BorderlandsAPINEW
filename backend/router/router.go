@@ -1,7 +1,7 @@
 package router
 
 import (
-	"backend/controller"
+	"borderlands_project/backend/controller"
 	"fmt"
 	"net/http"
 )
@@ -13,9 +13,8 @@ func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:8081")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		w.Header().Set("Access-Control-Allow-Credentials", "true") // Pour les cookies de session
+		w.Header().Set("Access-Control-Allow-Credentials", "true") // Pour les cookies
 
-		// Si le navigateur demande "Est-ce que je peux ?", on dit OUI tout de suite
 		if r.Method == "OPTIONS" {
 			return
 		}
@@ -28,16 +27,20 @@ func InitServer() {
 	http.HandleFunc("/api/weapons", enableCORS(controller.GetWeapons))
 	http.HandleFunc("/api/fav/toggle", enableCORS(controller.ToggleFavoriteAPI))
 
-	// 2. AUTH (Login/Signup) via API
+	// 2. AUTHENTIFICATION (API)
 	http.HandleFunc("/login", enableCORS(controller.LoginHandler))
 	http.HandleFunc("/signup", enableCORS(controller.SignupHandler))
 	http.HandleFunc("/logout", enableCORS(controller.LogoutHandler))
 
-	// 3. IMAGES (Servies par le backend)
-	// Les images doivent être dans le dossier 'backend/images'
-	imgServer := http.FileServer(http.Dir("./images"))
+	// 3. IMAGES
+	// Le chemin est relatif à la racine du projet (là où est le main.go)
+	imgServer := http.FileServer(http.Dir("./backend/images"))
 	http.Handle("/images/", http.StripPrefix("/images/", imgServer))
 
-	fmt.Println("📡 BACKEND API démarré sur le port 8000")
-	http.ListenAndServe(":8000", nil)
+	fmt.Println("✅ BACKEND (API 8000) : Prêt")
+
+	// On lance sur 8000
+	if err := http.ListenAndServe(":8000", nil); err != nil {
+		fmt.Println("❌ Erreur Backend :", err)
+	}
 }

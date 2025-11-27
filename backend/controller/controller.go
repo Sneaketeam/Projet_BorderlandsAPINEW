@@ -2,100 +2,44 @@ package controller
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"html/template"
-	"math"
 	"net/http"
-	"net/url"
-	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// ==========================================
-// 1. STRUCTURES DE DONNÉES
-// ==========================================
+// --- CONSTANTES ---
+const FRONTEND_URL = "http://localhost:8081"
 
+// --- STRUCTURES JSON ---
 type Weapon struct {
-	ID           int
-	Category     string
-	Name         string
-	Manufacturer string
-	Rarity       string
-	FlavorText   string
-	Details      string
-	Source       string
-	ImageURL     string
-	IsFavorite   bool
+	ID           int    `json:"id"`
+	Category     string `json:"category"`
+	Name         string `json:"name"`
+	Manufacturer string `json:"manufacturer"`
+	Rarity       string `json:"rarity"`
+	FlavorText   string `json:"flavor_text"`
+	Details      string `json:"details"`
+	Source       string `json:"source"`
+	ImageURL     string `json:"image_url"`
+	IsFavorite   bool   `json:"is_favorite"`
 }
 
-type PageData struct {
-	Weapons         []Weapon
-	CurrentCategory string
-	CurrentRarity   string
-	CurrentName     string
-	IsLoggedIn      bool
-	Username        string
-	FlashMessage    string
-	FlashType       string
-	// --- PAGINATION ---
-	CurrentPage int
-	TotalPages  int
-}
-
-type LoginData struct {
-	ErrorMessage string
-	IsError      bool
-}
-
-// ==========================================
-// 2. GESTION BASE DE DONNÉES
-// ==========================================
-
-// Connexion à la Base de Données (Cloud ou Local)
+// --- BDD ---
 func dbConn() (db *sql.DB) {
-	dbDriver := "mysql"
-
-	// --- 1. CONFIGURATION (À remplir avec tes infos AlwaysData) ---
+	// Connexion ALWAYSDATA (Cloud)
 	dbUser := "443067"
 	dbPass := "giogio220706"
 	dbHost := "mysql-borderlandsapi.alwaysdata.net"
 	dbName := "borderlandsapi_database"
-
-	/* --- (Garde ça sous la main si tu veux repasser en Local XAMPP) ---
-	dbUser = "root"
-	dbPass = ""
-	dbHost = "127.0.0.1"
-	dbName = "borderlands_db"
-	------------------------------------------------------------------- */
-
-	// Construction de l'adresse de connexion (DSN)
-	// parseTime=true : Permet de gérer les dates correctement
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:3306)/%s?parseTime=true", dbUser, dbPass, dbHost, dbName)
 
-	// Ouverture de la connexion
-	db, err := sql.Open(dbDriver, dsn)
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		fmt.Println("❌ Erreur critique d'ouverture SQL :", err)
 		panic(err.Error())
 	}
-
-	// TEST DE CONNEXION (Ping)
-	// C'est ici qu'on vérifie si le Cloud répond vraiment !
-	err = db.Ping()
-	if err != nil {
-		fmt.Println("------------------------------------------------------")
-		fmt.Println("❌ ÉCHEC DE CONNEXION À LA BDD !")
-		fmt.Println("👉 Vérifie :")
-		fmt.Println("   1. Ton mot de passe")
-		fmt.Println("   2. L'adresse Host (mysql-...alwaysdata.net)")
-		fmt.Println("   3. Si tu as bien autorisé les connexions distantes (%)")
-		fmt.Println("------------------------------------------------------")
-		panic(err.Error())
-	}
-
-	fmt.Println("✅ Connexion BDD réussie !")
 	return db
 }
 
@@ -106,103 +50,55 @@ func getUserID(db *sql.DB, username string) (int, error) {
 }
 
 // ==========================================
-// 3. PAGES PRINCIPALES
+// 1. API DATA (JSON)
 // ==========================================
 
-func IndexPage(w http.ResponseWriter, r *http.Request) {
-	// Anti-Cache
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-
+// Récupère la liste des armes en JSON (avec filtres)
+func GetWeapons(w http.ResponseWriter, r *http.Request) {
+	// Gestion Session (Pour savoir si c'est favori)
 	var isLoggedIn bool
-	var username string
+	var userID int
 	cookie, err := r.Cookie("session_token")
-	if err == nil {
-		isLoggedIn = true
-		username = cookie.Value
-	}
-
-	msgCode := r.URL.Query().Get("msg")
-	favName := r.URL.Query().Get("fav_name")
-	var flashMsg, flashType string
-
-	if msgCode == "nologin" {
-		flashMsg = "⚠️ Hé ! Connecte-toi pour ajouter des favoris !"
-		flashType = "error"
-	} else if msgCode == "added" {
-		if favName != "" {
-			flashMsg = "★ " + favName + " ajoutée aux Favoris !"
-		} else {
-			flashMsg = "★ Arme ajoutée aux Favoris !"
-		}
-		flashType = "success"
-	} else if msgCode == "removed" {
-		flashMsg = "🗑️ Arme retirée des Favoris."
-		flashType = "error"
-	} else if msgCode == "error" {
-		flashMsg = "❌ Erreur technique..."
-		flashType = "error"
-	}
 
 	db := dbConn()
 	defer db.Close()
 
-	// --- FILTRES ---
+	if err == nil {
+		isLoggedIn = true
+		userID, _ = getUserID(db, cookie.Value)
+	}
+
+	// Filtres URL
 	cat := r.URL.Query().Get("category")
 	rar := r.URL.Query().Get("rarity")
 	nam := r.URL.Query().Get("name")
+	man := r.URL.Query().Get("manufacturer") // Constructeur
 
-	// --- PAGINATION : RECUPERATION PAGE ---
-	pageStr := r.URL.Query().Get("page")
-	page, _ := strconv.Atoi(pageStr)
-	if page < 1 {
-		page = 1
-	}
-	limit := 10 // Nombre d'armes par page
-	offset := (page - 1) * limit
-
-	// Construction de la clause WHERE dynamique
-	whereClause := "1=1"
+	// Construction SQL
+	query := "SELECT * FROM weapons WHERE 1=1"
 	var args []interface{}
 
 	if cat != "" {
-		whereClause += " AND category = ?"
+		query += " AND category = ?"
 		args = append(args, cat)
 	}
 	if rar != "" {
-		whereClause += " AND rarity = ?"
+		query += " AND rarity = ?"
 		args = append(args, rar)
 	}
+	if man != "" {
+		query += " AND manufacturer = ?"
+		args = append(args, man)
+	}
 	if nam != "" {
-		whereClause += " AND name LIKE ?"
+		query += " AND name LIKE ?"
 		args = append(args, "%"+nam+"%")
 	}
-
-	// 1. COMPTER LE TOTAL (Pour savoir combien de pages il y a)
-	var totalItems int
-	countQuery := "SELECT COUNT(*) FROM weapons WHERE " + whereClause
-	db.QueryRow(countQuery, args...).Scan(&totalItems)
-	totalPages := int(math.Ceil(float64(totalItems) / float64(limit)))
-
-	// 2. RECUPERER LES ARMES (Avec LIMIT et OFFSET)
-	query := "SELECT * FROM weapons WHERE " + whereClause + " LIMIT ? OFFSET ?"
-	args = append(args, limit, offset)
 
 	rows, _ := db.Query(query, args...)
 	defer rows.Close()
 
 	var weapons []Weapon
-	var userID int
-	if isLoggedIn {
-		userID, _ = getUserID(db, username)
-	}
-
 	for rows.Next() {
 		var wpn Weapon
 		rows.Scan(&wpn.ID, &wpn.Category, &wpn.Name, &wpn.Manufacturer, &wpn.Rarity, &wpn.FlavorText, &wpn.Details, &wpn.Source, &wpn.ImageURL)
@@ -217,141 +113,19 @@ func IndexPage(w http.ResponseWriter, r *http.Request) {
 		weapons = append(weapons, wpn)
 	}
 
-	t, _ := template.ParseFiles("templates/index.html")
-	t.Execute(w, PageData{
-		Weapons:         weapons,
-		CurrentCategory: cat,
-		CurrentRarity:   rar,
-		CurrentName:     nam,
-		IsLoggedIn:      isLoggedIn,
-		Username:        username,
-		FlashMessage:    flashMsg,
-		FlashType:       flashType,
-		// Infos Pagination pour le HTML
-		CurrentPage: page,
-		TotalPages:  totalPages,
-	})
+	// Envoi JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(weapons)
 }
 
-func WeaponPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	id := r.URL.Query().Get("id")
-	db := dbConn()
-	defer db.Close()
-
-	var wpn Weapon
-	err := db.QueryRow("SELECT * FROM weapons WHERE id = ?", id).Scan(&wpn.ID, &wpn.Category, &wpn.Name, &wpn.Manufacturer, &wpn.Rarity, &wpn.FlavorText, &wpn.Details, &wpn.Source, &wpn.ImageURL)
-
-	if err != nil {
-		http.Error(w, "Arme introuvable", 404)
-		return
-	}
-
-	cookie, err := r.Cookie("session_token")
-	if err == nil {
-		userID, _ := getUserID(db, cookie.Value)
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM favorites WHERE user_id = ? AND weapon_id = ?", userID, wpn.ID).Scan(&count)
-		if count > 0 {
-			wpn.IsFavorite = true
-		}
-	}
-
-	t, _ := template.ParseFiles("templates/weapon.html")
-	t.Execute(w, wpn)
-}
-
-// ==========================================
-// 4. GESTION FAVORIS
-// ==========================================
-
-func FavoritesPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	cookie, err := r.Cookie("session_token")
-	if err != nil {
-		http.Redirect(w, r, "/auth?error=nologin", http.StatusSeeOther)
-		return
-	}
-	username := cookie.Value
-
-	db := dbConn()
-	defer db.Close()
-
-	query := `
-		SELECT w.id, w.category, w.name, w.manufacturer, w.rarity, w.flavor_text, w.details, w.source, w.image_url
-		FROM weapons w
-		JOIN favorites f ON w.id = f.weapon_id
-		JOIN users u ON f.user_id = u.id
-		WHERE u.username = ?
-	`
-	rows, _ := db.Query(query, username)
-	defer rows.Close()
-
-	var weapons []Weapon
-	for rows.Next() {
-		var wpn Weapon
-		rows.Scan(&wpn.ID, &wpn.Category, &wpn.Name, &wpn.Manufacturer, &wpn.Rarity, &wpn.FlavorText, &wpn.Details, &wpn.Source, &wpn.ImageURL)
-		weapons = append(weapons, wpn)
-	}
-
-	t, _ := template.ParseFiles("templates/favorites.html")
-	t.Execute(w, PageData{
-		Weapons:    weapons,
-		IsLoggedIn: true,
-		Username:   username,
-	})
-}
-
-func AddFavoriteHandler(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("session_token")
-	if err != nil {
-		http.Redirect(w, r, "/?msg=nologin", http.StatusSeeOther)
-		return
-	}
-
-	db := dbConn()
-	defer db.Close()
-
-	weaponID := r.URL.Query().Get("id")
-	userID, _ := getUserID(db, cookie.Value)
-
-	var weaponName string
-	db.QueryRow("SELECT name FROM weapons WHERE id = ?", weaponID).Scan(&weaponName)
-
-	db.Exec("INSERT IGNORE INTO favorites (user_id, weapon_id) VALUES (?, ?)", userID, weaponID)
-
-	safeName := url.QueryEscape(weaponName)
-	http.Redirect(w, r, "/?msg=added&fav_name="+safeName, http.StatusSeeOther)
-}
-
-func RemoveFavoriteHandler(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("session_token")
-	if err != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
-
-	db := dbConn()
-	defer db.Close()
-
-	userID, _ := getUserID(db, cookie.Value)
-	weaponID := r.URL.Query().Get("id")
-
-	db.Exec("DELETE FROM favorites WHERE user_id = ? AND weapon_id = ?", userID, weaponID)
-
-	http.Redirect(w, r, "/?msg=removed", http.StatusSeeOther)
-}
-
+// Toggle Favoris (AJAX JSON)
 func ToggleFavoriteAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
 	cookie, err := r.Cookie("session_token")
 	if err != nil {
-		http.Error(w, "Non connecté", http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error": "nologin"}`)
 		return
 	}
 
@@ -361,7 +135,7 @@ func ToggleFavoriteAPI(w http.ResponseWriter, r *http.Request) {
 	weaponID := r.URL.Query().Get("id")
 	userID, err := getUserID(db, cookie.Value)
 	if err != nil {
-		http.Error(w, "User introuvable", http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
@@ -370,8 +144,6 @@ func ToggleFavoriteAPI(w http.ResponseWriter, r *http.Request) {
 
 	var weaponName string
 	db.QueryRow("SELECT name FROM weapons WHERE id = ?", weaponID).Scan(&weaponName)
-
-	w.Header().Set("Content-Type", "application/json")
 
 	if count > 0 {
 		db.Exec("DELETE FROM favorites WHERE user_id = ? AND weapon_id = ?", userID, weaponID)
@@ -383,41 +155,8 @@ func ToggleFavoriteAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 // ==========================================
-// 5. AUTHENTIFICATION
+// 2. AUTHENTIFICATION (Redirections vers Frontend)
 // ==========================================
-
-func LoginPage(w http.ResponseWriter, r *http.Request) {
-	errCode := r.URL.Query().Get("error")
-	var msg string
-	var isError bool
-
-	if errCode == "exists" {
-		msg = "Ce pseudo est déjà pris !"
-		isError = true
-	} else if errCode == "wrong" {
-		msg = "Identifiants incorrects !"
-		isError = true
-	}
-
-	t, _ := template.ParseFiles("templates/login.html")
-	t.Execute(w, LoginData{ErrorMessage: msg, IsError: isError})
-}
-
-func SignupHandler(w http.ResponseWriter, r *http.Request) {
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	db := dbConn()
-	defer db.Close()
-
-	_, err := db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", username, password)
-	if err != nil {
-		http.Redirect(w, r, "/auth?error=exists", http.StatusSeeOther)
-		return
-	}
-	createCookie(w, username)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
 
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
@@ -430,22 +169,35 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	err := db.QueryRow("SELECT password FROM users WHERE username = ?", username).Scan(&dbPass)
 
 	if err != nil || dbPass != password {
-		http.Redirect(w, r, "/auth?error=wrong", http.StatusSeeOther)
+		// Erreur : On renvoie vers la page Login du Frontend
+		http.Redirect(w, r, FRONTEND_URL+"/login.html?error=wrong", http.StatusSeeOther)
 		return
 	}
 	createCookie(w, username)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, FRONTEND_URL, http.StatusSeeOther) // Vers l'accueil
+}
+
+func SignupHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	db := dbConn()
+	defer db.Close()
+
+	_, err := db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", username, password)
+	if err != nil {
+		http.Redirect(w, r, FRONTEND_URL+"/login.html?error=exists", http.StatusSeeOther)
+		return
+	}
+	createCookie(w, username)
+	http.Redirect(w, r, FRONTEND_URL, http.StatusSeeOther)
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
 	http.SetCookie(w, &http.Cookie{
 		Name: "session_token", Value: "", Expires: time.Unix(0, 0), Path: "/",
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, FRONTEND_URL, http.StatusSeeOther)
 }
 
 func createCookie(w http.ResponseWriter, username string) {
@@ -453,5 +205,3 @@ func createCookie(w http.ResponseWriter, username string) {
 		Name: "session_token", Value: username, Expires: time.Now().Add(24 * time.Hour), Path: "/",
 	})
 }
-
-func GetWeapons(w http.ResponseWriter, r *http.Request) {}
